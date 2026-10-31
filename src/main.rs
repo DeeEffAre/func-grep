@@ -33,7 +33,7 @@ fn main() {
     let query = Query::new(&tree_sitter_cpp::LANGUAGE.into(), query_str).unwrap();
 
     files.par_iter().for_each(|path| {
-        process_file(path, &cli, &query);
+        process_file(path, cli.threshold, &query);
     });
 }
 
@@ -43,11 +43,12 @@ fn find_filepaths(filepath: &str) -> Vec<PathBuf> {
         .build()
         .filter_map(std::result::Result::ok)
         .filter(|entry| {
-            if let Some(ext) = entry.path().extension() {
-                ext == "cpp" || ext == "hpp"
-            } else {
-                false
-            }
+            entry.path().extension().is_some_and(|ext| {
+                matches!(
+                    ext.to_str(),
+                    Some("cpp" | "hpp" | "cc" | "hh" | "cxx" | "hxx" | "h")
+                )
+            })
         })
         .map(ignore::DirEntry::into_path)
         .collect()
@@ -117,7 +118,7 @@ fn parse_source_code<'path, 'source_code>(
     return_vec
 }
 
-fn process_file(path: &Path, cli: &Cli, query: &Query) {
+fn process_file(path: &Path, threshold: usize, query: &Query) {
     let Ok(source_code) = std::fs::read_to_string(path) else {
         return;
     };
@@ -126,7 +127,7 @@ fn process_file(path: &Path, cli: &Cli, query: &Query) {
 
     parsed
         .iter()
-        .filter(|info| info.return_type != "auto" && info.return_type.len() >= cli.threshold)
+        .filter(|info| info.return_type != "auto" && info.return_type.len() >= threshold)
         .for_each(|info| {
             println!("{info}");
         });
