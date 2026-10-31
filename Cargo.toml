@@ -1,0 +1,11 @@
+[package]
+name = "func_grep"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+ignore = "0.4.34"
+rayon = "1.12.0"
+tree-sitter = "0.27.1"
+tree-sitter-cpp = "0.23.4"
