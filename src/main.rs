@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
+use colored::Colorize;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use tree_sitter::{Parser as TParser, Query, QueryCursor, StreamingIterator};
@@ -66,9 +67,9 @@ impl std::fmt::Display for FunctionInfo<'_, '_> {
         write!(
             f,
             "{}:{}: {} {}",
-            self.path.display(),
-            self.line,
-            self.return_type,
+            self.path.display().to_string().green(),
+            self.line.to_string().bright_blue(),
+            self.return_type.red().bold(),
             self.declarator
         )
     }
