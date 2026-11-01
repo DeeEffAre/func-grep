@@ -12,7 +12,12 @@ struct Cli {
     #[arg(default_value = "./")]
     path: String,
 
-    #[arg(short, long, default_value_t = 20)]
+    #[arg(
+        short,
+        long,
+        default_value_t = 20,
+        help = "character length the return type"
+    )]
     threshold: usize,
 }
 
@@ -121,6 +126,11 @@ fn parse_source_code<'path, 'source_code>(
                 break;
             };
             declarator_node = child;
+        }
+
+        // skip member variables
+        if declarator_node.kind() != "function_declarator" {
+            continue;
         }
 
         let return_type_text =
