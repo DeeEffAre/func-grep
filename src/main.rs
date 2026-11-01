@@ -23,11 +23,11 @@ fn main() {
     [
         (function_definition
             type: (_) @return_type
-            declarator: (function_declarator) @func_decl
+            declarator: (_) @declarator
         )
         (field_declaration
             type: (_) @return_type
-            declarator: (function_declarator) @func_decl
+            declarator: (_) @declarator
         )
     ]";
     let query = Query::new(&tree_sitter_cpp::LANGUAGE.into(), query_str).unwrap();
@@ -94,22 +94,43 @@ fn parse_source_code<'path, 'source_code>(
 
     let mut query_matches = cursor.matches(query, root_node, source_code.as_bytes());
 
+    let return_type_idx = query
+        .capture_index_for_name("return_type")
+        .expect("Failed to obtain return type");
+
+    let declarator_idx = query
+        .capture_index_for_name("declarator")
+        .expect("Failed to obtain function declarator");
+
     let mut return_vec = vec![];
     while let Some(q_match) = query_matches.next() {
-        let captures = q_match.captures();
-        let return_type_capture = captures.first().expect("Failed to obtain return type");
-        let return_type_node = return_type_capture.node;
-        let return_type_text = &source_code[return_type_node.byte_range()];
+        let return_type_node = q_match
+            .nodes_for_capture_index(return_type_idx)
+            .next()
+            .unwrap();
+
+        let mut declarator_node = q_match
+            .nodes_for_capture_index(declarator_idx)
+            .next()
+            .unwrap();
+
+        // Unwrap pointer/reference declarators down to the underlying function_declarator
+        while declarator_node.kind() != "function_declarator" {
+            let Some(child) = declarator_node.named_child(0) else {
+                break;
+            };
+            declarator_node = child;
+        }
+
+        let return_type_text =
+            source_code[return_type_node.start_byte()..declarator_node.start_byte()].trim_end();
+        let declarator_text = &source_code[declarator_node.byte_range()];
 
         let line = return_type_node.start_position().row + 1;
 
-        let function_declarator_capture = captures.get(1).unwrap();
-        let function_declarator_node = function_declarator_capture.node;
-        let function_declarator_text = &source_code[function_declarator_node.byte_range()];
-
         return_vec.push(FunctionInfo {
             return_type: return_type_text,
-            declarator: function_declarator_text,
+            declarator: declarator_text,
             line,
             path,
         });
