@@ -32,10 +32,12 @@ struct Cli {
 const QUERY_STR: &str = r"
     [
         (function_definition
+            (type_qualifier)? @qualifier
             type: (_) @return_type
             declarator: (_) @declarator
         )
         (field_declaration
+            (type_qualifier)?
             type: (_) @return_type
             declarator: (_) @declarator
         )
@@ -116,6 +118,13 @@ fn parse_source_code<'path>(
 
     let mut query_matches = cursor.matches(query, root_node, source_code.as_bytes());
 
+    // if a capture name is present in the query even if it is marked with "?" or it is not present
+    // after the query run, `capture_index_from_name` always return Some and an index inside. To check
+    // if it is exist, use `nodes_for_capture_index` on every query match
+    let qualifier_idx = query
+        .capture_index_for_name("qualifier")
+        .expect("Failed to obtain qualifier");
+
     let return_type_idx = query
         .capture_index_for_name("return_type")
         .expect("Failed to obtain return type");
@@ -149,10 +158,21 @@ fn parse_source_code<'path>(
             continue;
         }
 
-        let return_type_range = core::ops::Range::<usize> {
-            start: return_type_node.start_byte(),
-            end: declarator_node.start_byte() - 1,
-        };
+        // if qualifier exists (const, volatile) add qualifier to return type so it will be
+        // moved to the trailing return section
+        let return_type_range = q_match
+            .nodes_for_capture_index(qualifier_idx)
+            .next()
+            .map_or_else(
+                || core::ops::Range::<usize> {
+                    start: return_type_node.start_byte(),
+                    end: declarator_node.start_byte() - 1,
+                },
+                |qualifier_node| core::ops::Range::<usize> {
+                    start: qualifier_node.start_byte(),
+                    end: declarator_node.start_byte() - 1,
+                },
+            );
 
         let declarator_range = declarator_node.byte_range();
 
