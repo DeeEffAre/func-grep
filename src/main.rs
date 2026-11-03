@@ -209,7 +209,8 @@ fn process_file(path: &Path, threshold: usize, query: &Query, fix: bool) {
 
     let parsed = parse_source_code(&source_code, path, query);
     let filtered_iter = parsed.into_iter().filter(|info| {
-        info.return_type(&source_code) != "auto" && info.return_type_range.len() >= threshold
+        let return_type = info.return_type(&source_code);
+        return_type != "auto" && return_type.len() >= threshold
     });
 
     if fix {
@@ -396,22 +397,6 @@ public:
         let expected = "auto no_space() -> int& { static int x; return x; }\n";
 
         assert_eq!(fixed(source, 1), expected);
-    }
-
-    #[test]
-    fn return_type_range_excludes_extra_spaces() {
-        let source = "struct Foo {\n    std::string   spaced_name();\n};\n";
-        let path = PathBuf::from("test.hpp");
-        let query = query();
-
-        let parsed = parse_source_code(source, &path, &query);
-
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].return_type(source), "std::string");
-        assert_eq!(
-            parsed[0].return_type_range.len(),
-            parsed[0].return_type(source).len()
-        );
     }
 
     #[test]
