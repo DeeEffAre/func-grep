@@ -31,6 +31,11 @@ struct Cli {
 
 const QUERY_STR: &str = r"
     [
+        (declaration
+            (type_qualifier)? @qualifier
+            type: (_) @return_type
+            declarator: (_) @declarator
+        )
         (function_definition
             (type_qualifier)? @qualifier
             type: (_) @return_type
@@ -158,11 +163,15 @@ fn parse_source_code<'path>(
             continue;
         }
 
-        // check for virtual specifier
-        let mut declarator_node_cursor = declarator_node.walk();
-        let virtual_node = declarator_node
-            .named_children(&mut declarator_node_cursor)
-            .find(|child| child.kind() == "virtual_specifier");
+        // check for virtual specifier and/or requires_clause
+        let postfix_start = {
+            let mut cursor = declarator_node.walk();
+            declarator_node
+                .named_children(&mut cursor)
+                .filter(|child| matches!(child.kind(), "virtual_specifier" | "requires_clause"))
+                .map(|child| child.start_byte())
+                .min()
+        };
 
         // if qualifier exists (const, volatile) add qualifier to return type so it will be
         // moved to the trailing return section
@@ -180,13 +189,9 @@ fn parse_source_code<'path>(
                 },
             );
 
-        let declarator_range = if let Some(spec) = virtual_node {
-            core::ops::Range {
-                start: declarator_node.start_byte(),
-                end: spec.start_byte() - 1,
-            }
-        } else {
-            declarator_node.byte_range()
+        let declarator_range = core::ops::Range::<usize> {
+            start: declarator_node.start_byte(),
+            end: postfix_start.map_or(declarator_node.end_byte(), |start| start - 1),
         };
 
         let line = return_type_node.start_position().row + 1;
