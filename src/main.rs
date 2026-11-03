@@ -158,6 +158,12 @@ fn parse_source_code<'path>(
             continue;
         }
 
+        // check for virtual specifier
+        let mut declarator_node_cursor = declarator_node.walk();
+        let virtual_node = declarator_node
+            .named_children(&mut declarator_node_cursor)
+            .find(|child| child.kind() == "virtual_specifier");
+
         // if qualifier exists (const, volatile) add qualifier to return type so it will be
         // moved to the trailing return section
         let return_type_range = q_match
@@ -174,7 +180,14 @@ fn parse_source_code<'path>(
                 },
             );
 
-        let declarator_range = declarator_node.byte_range();
+        let declarator_range = if let Some(spec) = virtual_node {
+            core::ops::Range {
+                start: declarator_node.start_byte(),
+                end: spec.start_byte() - 1,
+            }
+        } else {
+            declarator_node.byte_range()
+        };
 
         let line = return_type_node.start_position().row + 1;
 
@@ -210,6 +223,7 @@ fn process_file(path: &Path, threshold: usize, query: &Query, fix: bool) {
         });
 
         auto_fix(&filtered, &mut source_code);
+        let _ = std::fs::write(path, source_code);
     } else {
         filtered_iter.for_each(|info| {
             println!("{}", info.display(&source_code));
