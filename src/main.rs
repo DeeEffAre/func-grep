@@ -447,4 +447,56 @@ public:
         assert_eq!(parsed[0].return_type(source), "std::vector<std::string>");
         assert_eq!(parsed[0].declarator(source), "free_proto()");
     }
+
+    #[test]
+    fn parses_function_with_multiple_leading_qualifiers_once() {
+        let source = "const volatile int& cv() { static int x; return x; }\n";
+        let path = PathBuf::from("test.cpp");
+        let query = query();
+
+        let parsed = parse_source_code(source, &path, &query);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].return_type(source), "const volatile int&");
+    }
+
+    #[test]
+    fn auto_fix_moves_multiple_leading_qualifiers_into_trailing_return() {
+        let source = "const volatile int& cv() { static int x; return x; }\n";
+        let expected = "auto cv() -> const volatile int& { static int x; return x; }\n";
+
+        assert_eq!(fixed(source, 1), expected);
+    }
+
+    #[test]
+    fn auto_fix_keeps_constexpr_as_function_specifier() {
+        let source = "constexpr std::string& cx() { static std::string s; return s; }\n";
+        let expected = "constexpr auto cx() -> std::string& { static std::string s; return s; }\n";
+
+        assert_eq!(fixed(source, 1), expected);
+    }
+
+    #[test]
+    fn auto_fix_keeps_consteval_as_function_specifier() {
+        let source = "consteval std::string& ce() { static std::string s; return s; }\n";
+        let expected = "consteval auto ce() -> std::string& { static std::string s; return s; }\n";
+
+        assert_eq!(fixed(source, 1), expected);
+    }
+
+    #[test]
+    fn auto_fix_moves_const_qualifier_for_member_function_declaration() {
+        let source = "struct Foo {\n    const std::string& name() const noexcept;\n};\n";
+        let expected = "struct Foo {\n    auto name() const noexcept -> const std::string&;\n};\n";
+
+        assert_eq!(fixed(source, 1), expected);
+    }
+
+    #[test]
+    fn auto_fix_preserves_tab_separator() {
+        let source = "int&\tget_ref() { static int x; return x; }\n";
+        let expected = "auto\tget_ref() -> int& { static int x; return x; }\n";
+
+        assert_eq!(fixed(source, 1), expected);
+    }
 }
