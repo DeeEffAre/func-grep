@@ -42,7 +42,7 @@ const QUERY_STR: &str = r"
             declarator: (_) @declarator
         )
         (field_declaration
-            (type_qualifier)?
+            (type_qualifier)? @qualifier
             type: (_) @return_type
             declarator: (_) @declarator
         )
@@ -81,6 +81,7 @@ struct FunctionInfo<'path> {
     declarator_range: core::ops::Range<usize>,
     line: usize,
     path: &'path Path,
+    auto_replacement: &'static str,
 }
 
 impl<'a> FunctionInfo<'_> {
@@ -173,6 +174,18 @@ fn parse_source_code<'path>(
                 .min()
         };
 
+        // if there space between return_type and declarator, decrement return_type's end byte by 1
+        // int&no_space()
+        // int& no_space()
+        // former one is also a valid syntax (weird)
+        let has_space_between_return_type_and_declarator =
+            source_code.as_bytes()[declarator_node.start_byte() - 1].is_ascii_whitespace();
+        let return_type_end_byte = if has_space_between_return_type_and_declarator {
+            declarator_node.start_byte() - 1
+        } else {
+            declarator_node.start_byte()
+        };
+
         // if qualifier exists (const, volatile) add qualifier to return type so it will be
         // moved to the trailing return section
         let return_type_range = q_match
@@ -181,11 +194,11 @@ fn parse_source_code<'path>(
             .map_or_else(
                 || core::ops::Range::<usize> {
                     start: return_type_node.start_byte(),
-                    end: declarator_node.start_byte() - 1,
+                    end: return_type_end_byte,
                 },
                 |qualifier_node| core::ops::Range::<usize> {
                     start: qualifier_node.start_byte(),
-                    end: declarator_node.start_byte() - 1,
+                    end: return_type_end_byte,
                 },
             );
 
@@ -196,11 +209,21 @@ fn parse_source_code<'path>(
 
         let line = return_type_node.start_position().row + 1;
 
+        // if there is no space between, it should be manually implemented, if not it will be
+        // something like this after autofix `autono_space()` which is not a valid syntax unlike
+        // `int&no_space()`
+        let auto_replacement: &'static str = if has_space_between_return_type_and_declarator {
+            "auto"
+        } else {
+            "auto "
+        };
+
         return_vec.push(FunctionInfo {
             return_type_range,
             declarator_range,
             line,
             path,
+            auto_replacement,
         });
     }
 
@@ -241,7 +264,8 @@ fn auto_fix(reversed_parsed_arr: &[FunctionInfo], source_code: &mut String) {
     for info in reversed_parsed_arr {
         let trailing_return = format!(" -> {}", info.return_type(source_code));
         source_code.insert_str(info.declarator_range.end, &trailing_return);
-        source_code.replace_range(info.return_type_range.clone(), "auto");
+
+        source_code.replace_range(info.return_type_range.clone(), info.auto_replacement);
     }
 }
 
