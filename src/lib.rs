@@ -195,6 +195,10 @@ impl App {
                     )
                 })?;
 
+            if return_type_node.kind() == "placeholder_type_specifier" {
+                continue;
+            }
+
             let mut declarator_node = q_match
                 .nodes_for_capture_index(capture_indexes.declarator)
                 .next()
@@ -333,9 +337,8 @@ impl App {
         threshold: usize,
     ) -> Result<impl Iterator<Item = FunctionInfo<'path>>> {
         let parsed = Self::parse_source_code(source_code, path, query)?;
-        Ok(parsed.into_iter().filter(move |info| {
-            let return_type = info.return_type(source_code);
-            !matches!(return_type, "auto" | "auto*") && return_type.len() >= threshold
-        }))
+        Ok(parsed
+            .into_iter()
+            .filter(move |info| info.return_type(source_code).chars().count() >= threshold))
     }
 }
