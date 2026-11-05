@@ -116,22 +116,30 @@ impl CaptureIndexes {
 pub struct App {
     pub files: Vec<PathBuf>,
     query: Query,
+    config: Cli,
+    capture_indexes: CaptureIndexes,
 }
 
 impl App {
-    pub fn new(filepath: &str) -> Result<Self> {
-        let files = Self::find_filepaths(filepath);
+    pub fn new(config: Cli) -> Result<Self> {
+        let files = Self::find_filepaths(&config.path);
         let query = Query::new(&tree_sitter_cpp::LANGUAGE.into(), QUERY_STR)?;
+        let capture_indexes = CaptureIndexes::new(&query)?;
 
-        Ok(Self { files, query })
+        Ok(Self {
+            files,
+            query,
+            config,
+            capture_indexes,
+        })
     }
 
-    pub fn process_files(&self, cli: &Cli) -> Result<()> {
+    pub fn process_files(&self) -> Result<()> {
         let process_results = self
             .files
             .par_iter()
             .map(|path| {
-                Self::process_file(path, cli, &self.query)
+                self.process_file(path)
                     .with_context(|| format!("Failed to process {}", path.display()))
             })
             .collect::<Vec<Result<_>>>();
@@ -162,9 +170,9 @@ impl App {
     }
 
     fn parse_source_code<'path>(
+        &self,
         source_code: &str,
         path: &'path Path,
-        query: &Query,
     ) -> Result<Vec<FunctionInfo<'path>>> {
         let mut parser = TParser::new();
         parser
@@ -179,14 +187,12 @@ impl App {
 
         let mut cursor = QueryCursor::new();
 
-        let mut query_matches = cursor.matches(query, root_node, source_code.as_bytes());
-
-        let capture_indexes = CaptureIndexes::new(query)?;
+        let mut query_matches = cursor.matches(&self.query, root_node, source_code.as_bytes());
 
         let mut return_vec = vec![];
         while let Some(q_match) = query_matches.next() {
             let return_type_node = q_match
-                .nodes_for_capture_index(capture_indexes.return_type)
+                .nodes_for_capture_index(self.capture_indexes.return_type)
                 .next()
                 .ok_or_else(|| {
                     anyhow!(
@@ -200,7 +206,7 @@ impl App {
             }
 
             let mut declarator_node = q_match
-                .nodes_for_capture_index(capture_indexes.declarator)
+                .nodes_for_capture_index(self.capture_indexes.declarator)
                 .next()
                 .ok_or_else(|| {
                     anyhow!(
@@ -247,7 +253,7 @@ impl App {
             // if qualifier exists (const, volatile) add qualifier to return type so it will be
             // moved to the trailing return section
             let return_type_range = q_match
-                .nodes_for_capture_index(capture_indexes.qualifier)
+                .nodes_for_capture_index(self.capture_indexes.qualifier)
                 .find(|node| {
                     node.utf8_text(source_code.as_bytes())
                         .is_ok_and(|text| matches!(text, "const" | "volatile")) // skip contsexpr and consteval
@@ -291,14 +297,14 @@ impl App {
         Ok(return_vec)
     }
 
-    fn process_file(path: &Path, cli: &Cli, query: &Query) -> Result<()> {
+    fn process_file(&self, path: &Path) -> Result<()> {
         let mut source_code = std::fs::read_to_string(path)?;
 
-        if cli.fix {
-            Self::fix_source(&mut source_code, path, query, cli.threshold)?;
+        if self.config.fix {
+            self.fix_source(&mut source_code, path)?;
             std::fs::write(path, source_code)?;
         } else {
-            let functions = Self::filtered_functions(&source_code, path, query, cli.threshold)?;
+            let functions = self.filtered_functions(&source_code, path)?;
             let mut output = String::new();
             for info in functions {
                 let _ = writeln!(output, "{}", info.display(&source_code));
@@ -311,14 +317,8 @@ impl App {
         Ok(())
     }
 
-    fn fix_source(
-        source_code: &mut String,
-        path: &Path,
-        query: &Query,
-        threshold: usize,
-    ) -> Result<()> {
-        let mut functions: Vec<_> =
-            Self::filtered_functions(source_code, path, query, threshold)?.collect();
+    fn fix_source(&self, source_code: &mut String, path: &Path) -> Result<()> {
+        let mut functions: Vec<_> = self.filtered_functions(source_code, path)?.collect();
         functions.sort_unstable_by_key(|info| std::cmp::Reverse(info.return_type_range.start));
 
         for info in functions {
@@ -331,12 +331,12 @@ impl App {
     }
 
     fn filtered_functions<'path>(
+        &self,
         source_code: &str,
         path: &'path Path,
-        query: &Query,
-        threshold: usize,
     ) -> Result<impl Iterator<Item = FunctionInfo<'path>>> {
-        let parsed = Self::parse_source_code(source_code, path, query)?;
+        let parsed = self.parse_source_code(source_code, path)?;
+        let threshold = self.config.threshold;
         Ok(parsed
             .into_iter()
             .filter(move |info| info.return_type(source_code).chars().count() >= threshold))

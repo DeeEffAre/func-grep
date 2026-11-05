@@ -4,6 +4,6 @@ use func_grep::{App, Cli};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let app = App::new(&cli.path)?;
-    app.process_files(&cli)
+    let app = App::new(cli)?;
+    app.process_files()
 }

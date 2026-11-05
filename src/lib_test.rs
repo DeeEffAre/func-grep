@@ -6,7 +6,7 @@ mod test {
     use anyhow::{Context, Result};
     use tree_sitter::Query;
 
-    use crate::{App, Cli, QUERY_STR};
+    use crate::{App, CaptureIndexes, Cli, QUERY_STR};
 
     const DEFAULT_THRESHOLD: usize = 20;
 
@@ -15,14 +15,26 @@ mod test {
             .context("failed to build tree-sitter query")
     }
 
+    fn app(threshold: usize) -> Result<App> {
+        let files = Vec::new();
+        let query = query()?;
+        let config = Cli {
+            path: String::new(),
+            threshold,
+            fix: false,
+        };
+        let capture_indexes = CaptureIndexes::new(&query)?;
+        Ok(App {
+            files,
+            query,
+            config,
+            capture_indexes,
+        })
+    }
+
     fn fixed(source: &str, threshold: usize) -> Result<String> {
         let mut source_owned = source.to_owned();
-        App::fix_source(
-            &mut source_owned,
-            Path::new("test.cpp"),
-            &query()?,
-            threshold,
-        )?;
+        app(threshold)?.fix_source(&mut source_owned, Path::new("test.cpp"))?;
 
         Ok(source_owned)
     }
@@ -80,13 +92,13 @@ public:
         let source = "std::vector<std::string> make_names() { return {}; }\n";
         fs::write(&path, source).context("failed to write test source file")?;
 
-        let query = query()?;
         let cli = Cli {
             path: path.display().to_string(),
             threshold: 1,
             fix: true,
         };
-        App::process_file(&path, &cli, &query)?;
+        let app = App::new(cli).context("failed to create app")?;
+        app.process_file(&path)?;
 
         let fixed_source = fs::read_to_string(&path).context("failed to read fixed source file")?;
         assert_eq!(
@@ -175,9 +187,9 @@ public:
     fn parses_namespace_scope_function_declaration() -> Result<()> {
         let source = "std::vector<std::string> free_proto();\n";
         let path = PathBuf::from("test.hpp");
-        let query = query()?;
+        let app = app(DEFAULT_THRESHOLD)?;
 
-        let parsed = App::parse_source_code(source, &path, &query)?;
+        let parsed = app.parse_source_code(source, &path)?;
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].return_type(source), "std::vector<std::string>");
@@ -189,9 +201,9 @@ public:
     fn parses_function_with_multiple_leading_qualifiers_once() -> Result<()> {
         let source = "const volatile int& cv() { static int x; return x; }\n";
         let path = PathBuf::from("test.cpp");
-        let query = query()?;
+        let app = app(DEFAULT_THRESHOLD)?;
 
-        let parsed = App::parse_source_code(source, &path, &query)?;
+        let parsed = app.parse_source_code(source, &path)?;
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].return_type(source), "const volatile int&");
@@ -240,6 +252,114 @@ public:
         let expected = "auto\tget_ref() -> int& { static int x; return x; }\n";
 
         assert_eq!(fixed(source, 1)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn auto_fix_inserts_trailing_return_before_override_without_space() -> Result<()> {
+        let source = "struct B { virtual std::vector<std::string> f(); };\nstruct D : B { std::vector<std::string> f()override; };\n";
+        let expected = "struct B { virtual auto f() -> std::vector<std::string>; };\nstruct D : B { auto f() -> std::vector<std::string> override; };\n";
+
+        assert_eq!(fixed(source, 1)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn auto_fix_inserts_trailing_return_before_requires_without_space() -> Result<()> {
+        let source = r"struct Foo {
+    template <typename T>
+    std::vector<std::string> req(T t)requires std::integral<T>;
+};
+";
+        let expected = r"struct Foo {
+    template <typename T>
+    auto req(T t) -> std::vector<std::string> requires std::integral<T>;
+};
+";
+
+        assert_eq!(fixed(source, 1)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn auto_fix_skips_multi_declarator_declarations() -> Result<()> {
+        let source = "struct Foo {\n    std::vector<std::string> a(), b();\n};\n";
+
+        assert_eq!(fixed(source, 1)?, source);
+        Ok(())
+    }
+
+    #[test]
+    fn auto_fix_skips_placeholder_auto_reference_return_types() -> Result<()> {
+        let source = "auto& auto_ref() { static int x; return x; }\nauto&& auto_rref() { static int x; return static_cast<int&&>(x); }\nconst auto* const_auto_ptr() { return static_cast<const int*>(nullptr); }\n";
+
+        assert_eq!(fixed(source, 1)?, source);
+        Ok(())
+    }
+
+    #[test]
+    fn app_new_rejects_nonexistent_path() {
+        let path =
+            std::env::temp_dir().join(format!("func_grep_missing_path_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+
+        let result = App::new(Cli {
+            path: path.to_str().unwrap().to_string(),
+            threshold: DEFAULT_THRESHOLD,
+            fix: false,
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn process_files_returns_error_when_a_file_cannot_be_read() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("func_grep_bad_file_{}", std::process::id()));
+        fs::create_dir_all(&dir).context("failed to create test directory")?;
+        fs::write(dir.join("invalid_utf8.cpp"), [0xFF, 0xFE, 0xFD])
+            .context("failed to write invalid utf-8 test file")?;
+
+        let cli = Cli {
+            path: dir.display().to_string(),
+            threshold: DEFAULT_THRESHOLD,
+            fix: false,
+        };
+        let app = App::new(cli).context("failed to create app")?;
+
+        let result = app.process_files();
+
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fix_does_not_write_unchanged_file() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "func_grep_unchanged_file_{}.cpp",
+            std::process::id()
+        ));
+        fs::write(&path, "int foo() { return 1; }\n")
+            .context("failed to write unchanged test file")?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444))
+            .context("failed to make test file read-only")?;
+
+        let cli = Cli {
+            path: path.display().to_string(),
+            threshold: DEFAULT_THRESHOLD,
+            fix: true,
+        };
+        let app = App::new(cli).context("failed to create app")?;
+        let result = app.process_file(&path);
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))?;
+        let _ = fs::remove_file(&path);
+
+        result?;
         Ok(())
     }
 }
