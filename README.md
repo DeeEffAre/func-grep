@@ -1,63 +1,74 @@
-# What is that project?
+# func_grep
 
-func-grep is a long return type capture cli application for C++ projects.
+A small CLI I wrote for my own C++ projects. It finds function signatures whose
+return type is longer than a threshold I choose, and can rewrite those signatures
+to use trailing return types.
 
-Works perfectly for both source and header files.
-
-The motivation for this project was to use trailing return types in function signatures for readability
+I don't want every function to use a trailing return type. Short types read fine
+inline; long template types push the function name out of view. `clang-tidy`'s
+`modernize-use-trailing-return-type` converts everything. This tool only touches return types above the threshold,
+and it works directly on source files.
 
 ```cpp
-    [[nodiscard]]
-    std::expected<std::vector<std::byte>*, ErrorCode> get(std::span<const std::byte> key) const noexcept;
-    // here is the return type is 49 characters and breaks readability of the member function
+[[nodiscard]]
+std::expected<std::vector<std::byte>*, ErrorCode> get(std::span<const std::byte> key) const noexcept;
+// 49 characters before the function name
 
-    // we can use type aliases
-    [[nodiscard]]
-    std::expected<ByteVec*, ErrorCode> get(ByteSpan key) const noexcept;
-    // still 34 characters in return type and pretty long for my liking
-
-    // finally we can use to trailing return types with type aliases
-    [[nodiscard]]
-    auto get(ByteSpan key) const noexcept -> std::expected<ByteVec*, ErrorCode>;
-    // both function name and return type is easily selectable now
+[[nodiscard]]
+auto get(std::span<const std::byte> key) const noexcept -> std::expected<std::vector<std::byte>*, ErrorCode>;
+// same signature, easier to scan
 ```
 
-# Usage
+## Usage
 
 ```bash
 cargo build --release
-./target/release/func_grep <path> [-t <threshold>]
+./target/release/func_grep <path> [-t <threshold>] [--fix]
 ```
 
-Default value for path argument is `./`
+`path` defaults to `./`. `threshold` is the character length of the return type
+and defaults to `20`. `--fix` rewrites files in place; there is no dry-run.
 
-Example with `demo/`. Default threshold:
+Scan the demo directory:
 
 ```bash
-❯ ./target/release/func_grep demo
+$ ./target/release/func_grep demo
 demo/test.hpp:8: std::expected<ByteVec*, ErrorCode> get(ByteSpan key) const noexcept
 ```
 
-Threshold set to 1
+Lower the threshold to see more:
 
 ```bash
-❯ ./target/release/func_grep demo -t1
+$ ./target/release/func_grep demo -t 1
 demo/test.hpp:5: void put(RecordType record_type, ByteVec key, ByteVec value) noexcept
 demo/test.hpp:8: std::expected<ByteVec*, ErrorCode> get(ByteSpan key) const noexcept
-demo/test.hpp:14: void restore(Memtable&& table_to_load) noexcept
-demo/test.hpp:16: void clear_memtable() noexcept
-demo/test.cpp:8: void Engine::put(RecordType record_type, ByteVec key, ByteVec value) noexcept
-demo/test.cpp:24: void Engine::restore(Memtable&& table_to_load) noexcept
-demo/test.cpp:28: void Engine::clear_memtable() noexcept
-demo/test.cpp:32: void clear()
-demo/test.cpp:34: int& asd()
-demo/test.cpp:35: char* asd1()
+...
 demo/test.cpp:36: char** asd2()
 ```
 
-It also detects reference and nested pointer return types
+## How it works
 
-There are no benchmarks yet; I don't think they're necessary for a tool this small. A few performance notes:
+- tree-sitter-cpp parses each file; no compiler or build setup is required.
+- It looks at function definitions and declarations, including member functions.
+- Pointer/reference declarators are unwrapped, and `const`/`volatile` stay with
+  the return type when it moves.
+- Files are processed in parallel with rayon.
+- `--fix` inserts the trailing return before `override`, `final`, or `requires`
+  when they are present.
 
-- Processing every file (`process_file`) is done in parallel with [rayon](https://crates.io/crates/rayon)
-- Store `return_type` and `declarator` values in `&str` with annotated lifetimes in `FunctionInfo` struct to avoid unnecessary heap allocation on data which will only be used for read-only purposes
+## Scope and limitations
+
+This is a personal tool, not a clang-tidy replacement. It does not do semantic
+analysis, so macros, unusual templates, or very creative formatting can confuse
+it. Current known gaps:
+
+- declarations with multiple declarators (`T a(), b();`) are not handled;
+- spacing around `override`/`requires` is assumed; run clang-format first;
+- only `.cpp`, `.hpp`, `.cc`, `.hh`, `.cxx`, `.hxx`, and `.h` files are scanned;
+- comments between the return type and function name can move with the return
+  type;
+- `--fix` writes directly to disk, so use version control.
+
+If you want every function converted, use clang-tidy's
+`modernize-use-trailing-return-type`. If you only care about long return types,
+this should do the job.
