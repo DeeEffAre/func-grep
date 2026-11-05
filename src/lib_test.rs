@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod test {
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use anyhow::{Context, Result};
     use tree_sitter::Query;
@@ -16,24 +16,15 @@ mod test {
     }
 
     fn fixed(source: &str, threshold: usize) -> Result<String> {
-        let mut source = source.to_string();
-        let path = PathBuf::from("test.cpp");
-        let query = query()?;
-        let mut functions: Vec<_> = App::parse_source_code(&source, &path, &query)?
-            .into_iter()
-            .filter(|info| {
-                info.return_type(&source) != "auto" && info.return_type(&source).len() >= threshold
-            })
-            .collect();
+        let mut source_owned = source.to_owned();
+        App::fix_source(
+            &mut source_owned,
+            Path::new("test.cpp"),
+            &query()?,
+            threshold,
+        )?;
 
-        functions.sort_by(|info1, info2| {
-            info2
-                .return_type_range
-                .start
-                .cmp(&info1.return_type_range.start)
-        });
-        App::auto_fix(&functions, &mut source);
-        Ok(source)
+        Ok(source_owned)
     }
 
     #[test]

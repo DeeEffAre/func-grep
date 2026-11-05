@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Write,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
@@ -12,17 +15,17 @@ mod lib_test;
 const QUERY_STR: &str = r"
     [
         (declaration
-            (type_qualifier)? @qualifier
+            (type_qualifier)* @qualifier
             type: (_) @return_type
             declarator: (_) @declarator
         )
         (function_definition
-            (type_qualifier)? @qualifier
+            (type_qualifier)* @qualifier
             type: (_) @return_type
             declarator: (_) @declarator
         )
         (field_declaration
-            (type_qualifier)? @qualifier
+            (type_qualifier)* @qualifier
             type: (_) @return_type
             declarator: (_) @declarator
         )
@@ -54,6 +57,7 @@ pub struct Cli {
 struct FunctionInfo<'path> {
     return_type_range: core::ops::Range<usize>,
     declarator_range: core::ops::Range<usize>,
+    line: usize,
     path: &'path Path,
     auto_replacement: &'static str,
 }
@@ -67,15 +71,11 @@ impl<'a> FunctionInfo<'_> {
         &source_code[self.declarator_range.clone()]
     }
 
-    const fn line(&self) -> usize {
-        self.return_type_range.start + 1
-    }
-
     fn display(&self, source_code: &str) -> String {
         format!(
             "{}:{}: {} {}",
             self.path.display().to_string().green(),
-            self.line().to_string().bright_blue(),
+            self.line.to_string().bright_blue(),
             self.return_type(source_code).red().bold(),
             self.declarator(source_code)
         )
@@ -244,7 +244,10 @@ impl App {
             // moved to the trailing return section
             let return_type_range = q_match
                 .nodes_for_capture_index(capture_indexes.qualifier)
-                .next()
+                .find(|node| {
+                    node.utf8_text(source_code.as_bytes())
+                        .is_ok_and(|text| matches!(text, "const" | "volatile")) // skip contsexpr and consteval
+                })
                 .map_or_else(
                     || core::ops::Range::<usize> {
                         start: return_type_node.start_byte(),
@@ -261,6 +264,8 @@ impl App {
                 end: postfix_start.map_or_else(|| declarator_node.end_byte(), |start| start - 1),
             };
 
+            let line = return_type_node.start_position().row + 1;
+
             // if there is no space between, it should be manually implemented, if not it will be
             // something like this after autofix `autono_space()` which is not a valid syntax unlike
             // `int&no_space()`
@@ -273,6 +278,7 @@ impl App {
             return_vec.push(FunctionInfo {
                 return_type_range,
                 declarator_range,
+                line,
                 path,
                 auto_replacement,
             });
@@ -284,24 +290,15 @@ impl App {
     fn process_file(path: &Path, cli: &Cli, query: &Query) -> Result<()> {
         let mut source_code = std::fs::read_to_string(path)?;
 
-        let parsed = Self::parse_source_code(&source_code, path, query)?;
-        let filtered_iter = parsed.into_iter().filter(|info| {
-            let return_type = info.return_type(&source_code);
-            return_type != "auto" && return_type.len() >= cli.threshold
-        });
-
         if cli.fix {
-            let mut filtered: Vec<_> = filtered_iter.collect();
-            filtered.sort_unstable_by_key(|info| std::cmp::Reverse(info.return_type_range.start));
-
-            Self::auto_fix(&filtered, &mut source_code);
+            Self::fix_source(&mut source_code, path, query, cli.threshold)?;
             std::fs::write(path, source_code)?;
         } else {
+            let functions = Self::filtered_functions(&source_code, path, query, cli.threshold)?;
             let mut output = String::new();
-            filtered_iter.for_each(|info| {
-                use std::fmt::Write;
+            for info in functions {
                 let _ = writeln!(output, "{}", info.display(&source_code));
-            });
+            }
 
             if !output.is_empty() {
                 print!("{output}");
@@ -310,11 +307,35 @@ impl App {
         Ok(())
     }
 
-    fn auto_fix(reversed_parsed_arr: &[FunctionInfo], source_code: &mut String) {
-        for info in reversed_parsed_arr {
+    fn fix_source(
+        source_code: &mut String,
+        path: &Path,
+        query: &Query,
+        threshold: usize,
+    ) -> Result<()> {
+        let mut functions: Vec<_> =
+            Self::filtered_functions(source_code, path, query, threshold)?.collect();
+        functions.sort_unstable_by_key(|info| std::cmp::Reverse(info.return_type_range.start));
+
+        for info in functions {
             let trailing_return = format!(" -> {}", info.return_type(source_code));
             source_code.insert_str(info.declarator_range.end, &trailing_return);
             source_code.replace_range(info.return_type_range.clone(), info.auto_replacement);
         }
+
+        Ok(())
+    }
+
+    fn filtered_functions<'path>(
+        source_code: &str,
+        path: &'path Path,
+        query: &Query,
+        threshold: usize,
+    ) -> Result<impl Iterator<Item = FunctionInfo<'path>>> {
+        let parsed = Self::parse_source_code(source_code, path, query)?;
+        Ok(parsed.into_iter().filter(move |info| {
+            let return_type = info.return_type(source_code);
+            !matches!(return_type, "auto" | "auto*") && return_type.len() >= threshold
+        }))
     }
 }
