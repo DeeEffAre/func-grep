@@ -144,12 +144,18 @@ impl App {
             })
             .collect::<Vec<Result<_>>>();
 
+        let mut err_buffer = String::new();
         for result in process_results {
             if let Err(error) = result {
-                eprintln!("{error}");
+                let _ = writeln!(err_buffer, "{error}");
             }
         }
-        Ok(())
+
+        if err_buffer.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!("{err_buffer}"))
+        }
     }
 
     fn find_filepaths(filepath: &str) -> Result<Vec<PathBuf>> {
