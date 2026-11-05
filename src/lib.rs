@@ -122,7 +122,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: Cli) -> Result<Self> {
-        let files = Self::find_filepaths(&config.path);
+        let files = Self::find_filepaths(&config.path)?;
         let query = Query::new(&tree_sitter_cpp::LANGUAGE.into(), QUERY_STR)?;
         let capture_indexes = CaptureIndexes::new(&query)?;
 
@@ -152,9 +152,13 @@ impl App {
         Ok(())
     }
 
-    fn find_filepaths(filepath: &str) -> Vec<PathBuf> {
+    fn find_filepaths(filepath: &str) -> Result<Vec<PathBuf>> {
         let path = Path::new(filepath);
-        WalkBuilder::new(path)
+        if !path.exists() {
+            return Err(anyhow!("{} does not exists", path.display()));
+        }
+
+        Ok(WalkBuilder::new(path)
             .build()
             .filter_map(std::result::Result::ok)
             .filter(|entry| {
@@ -166,7 +170,7 @@ impl App {
                 })
             })
             .map(ignore::DirEntry::into_path)
-            .collect()
+            .collect())
     }
 
     fn parse_source_code<'path>(
@@ -301,8 +305,9 @@ impl App {
         let mut source_code = std::fs::read_to_string(path)?;
 
         if self.config.fix {
-            self.fix_source(&mut source_code, path)?;
-            std::fs::write(path, source_code)?;
+            if self.fix_source(&mut source_code, path)? {
+                std::fs::write(path, source_code)?;
+            }
         } else {
             let functions = self.filtered_functions(&source_code, path)?;
             let mut output = String::new();
@@ -317,8 +322,13 @@ impl App {
         Ok(())
     }
 
-    fn fix_source(&self, source_code: &mut String, path: &Path) -> Result<()> {
+    fn fix_source(&self, source_code: &mut String, path: &Path) -> Result<bool> {
         let mut functions: Vec<_> = self.filtered_functions(source_code, path)?.collect();
+
+        if functions.is_empty() {
+            return Ok(false);
+        }
+
         functions.sort_unstable_by_key(|info| std::cmp::Reverse(info.return_type_range.start));
 
         for info in functions {
@@ -327,7 +337,7 @@ impl App {
             source_code.replace_range(info.return_type_range.clone(), info.auto_replacement);
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn filtered_functions<'path>(
