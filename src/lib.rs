@@ -67,7 +67,7 @@ impl<'a> FunctionInfo<'_> {
         &source_code[self.declarator_range.clone()]
     }
 
-    fn line(&self) -> usize {
+    const fn line(&self) -> usize {
         self.return_type_range.start + 1
     }
 
@@ -291,21 +291,21 @@ impl App {
         });
 
         if cli.fix {
-            // sort from last to first
             let mut filtered: Vec<_> = filtered_iter.collect();
-            filtered.sort_by(|info1, info2| {
-                info2
-                    .return_type_range
-                    .start
-                    .cmp(&info1.return_type_range.start)
-            });
+            filtered.sort_unstable_by_key(|info| std::cmp::Reverse(info.return_type_range.start));
 
             Self::auto_fix(&filtered, &mut source_code);
-            let _ = std::fs::write(path, source_code);
+            std::fs::write(path, source_code)?;
         } else {
+            let mut output = String::new();
             filtered_iter.for_each(|info| {
-                println!("{}", info.display(&source_code));
+                use std::fmt::Write;
+                let _ = writeln!(output, "{}", info.display(&source_code));
             });
+
+            if !output.is_empty() {
+                print!("{output}");
+            }
         }
         Ok(())
     }
